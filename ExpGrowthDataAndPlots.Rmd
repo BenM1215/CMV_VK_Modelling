@@ -1,0 +1,546 @@
+---
+title: "Exponential Growth Data + Plots"
+author: "Ben Margetts"
+date: "16/04/2018"
+output:
+  pdf_document: default
+  html_document: default
+---
+
+# Description
+
+Prepares BMT data into seperate 'reactivation events'
+
+# Libraries
+```{r}
+library(rstan)
+library(ggplot2)
+library(scales)
+library(plyr)
+library(minpack.lm)
+
+rstan_options(auto_write = TRUE)
+options(mc.cores = parallel::detectCores(), scipen=10000)
+```
+
+
+# Read in data
+```{r}
+wd <- '~/Google/PhD/Year_1/Modelling/Exponential Growth'
+wd.output <- '~/Google/PhD/Year_1/Modelling/Exponential Growth/Figs'
+setwd(wd)
+dat <- read.csv('VLClean.csv', stringsAsFactors = F)
+```
+
+
+```{r}
+formatterIU <- function(x){ 
+    ifelse(x<=200, "LLOQ", format(x/4, decimal.mark = ".", digits = 0,  big.mark=" "))
+}
+```
+
+
+# Remove patients who don't exceed 1000 copies/mL
+```{r}
+dat$PeakVL <- NA # edits incorrect PeakVL data
+dat$Y0 <- NA # edits incorrect Y0 data
+
+dat$VL[dat$VL <= 200] <- 200
+
+for (i in unique(dat$ID)){
+  
+  temp <- dat[dat$ID == i,]
+  temp <- temp[order(temp$Time),]
+  peakVL <- max(temp$VL)
+  y0 <- temp$VL[1]
+  
+  dat$PeakVL[dat$ID == i] <- peakVL
+  dat$Y0[dat$ID == i] <- y0
+}
+
+dat <- dat[!dat$PeakVL <= 1000,]
+
+dat$newID <- as.numeric(factor(dat$ID))
+```
+
+
+
+# 'Reactivation event' detection algorithm + exponential detection
+```{r}
+# Loop
+dat$Event <- NA
+dat <- dat[order(dat$ID, dat$Time),]
+event <- 0 # provides a unique ID for each event, seperate to the last
+
+for (i in unique(dat$ID)){
+  # Variables needed
+  temp <- dat[dat$ID == i,]
+  #temp <- dat[dat$ID == '947043',]
+  prevVL <- unique(temp$Y0)
+  prevTime <- temp$Time[1]
+  currentPeak <- unique(temp$Y0)
+  currentVL <- NA
+  currentTime <- NA
+  #event <- 0 # resets for each ID
+  events <- vector()
+  updateFlag <- F
+  vlThreshold <- 10 # percent reduction in VL required to cut off
+  monitoringThreshold <- 9 # copies/mL
+  timeThreshold <- 21 # days
+  
+  ### event detection (dat$expEvent) ###
+  for (j in seq(length(temp$VL))){
+    currentVL <- temp$VL[j]
+    currentTime <- temp$Time[j]
+    
+    if (currentVL > currentPeak){
+      currentPeak <- currentVL
+    }
+    
+    # UNFINISHED - if y0 > LLOQ???
+    # UNFINISHED - First VL that exceeds x = start of event 1?
+  
+    # if current VL is increase from previous VL, but significantly less then current peak, = inflection:
+    if (currentVL >= prevVL & currentVL < (currentPeak/100)*vlThreshold){
+      currentPeak <- currentVL
+      updateFlag <- T
+    }
+      
+    # if time difference between previous and current > x days:
+    #if (event == 103){print(c(prevTime, currentTime, event))}
+    #print(c(i, prevTime, currentTime, event, prevVL, currentVL))
+    if(currentTime - prevTime > timeThreshold & currentVL >= monitoringThreshold){
+      updateFlag <- T
+    }
+      
+      ### Update before ending loop ###
+      prevVL <- currentVL
+      prevTime <- currentTime
+      if (updateFlag == T){
+        event <- event + 1
+        updateFlag <- F
+      }
+      events <- append(events, event) # create events ID list
+      #print(c(unique(temp$ID), event, currentVL, currentPeak))
+      
+  } # End VL loop
+  event <- event + 1
+  dat$Event[dat$ID==i] <- events # apply events ID to dataset
+}
+
+### exponential detection (dat$expEvent) ###
+dat$ExpEvent <- dat$Event
+
+dat$numSamples <- NA
+for (i in unique(dat$ID)){
+  temp <- dat[dat$ID == i,]
+  dat$numSamples[dat$ID == i] <- length(temp$ID)
+  for (j in unique(temp$Event)){
+    temptemp <- temp[temp$Event == j,]
+    peakTime <- temptemp$Time[temptemp$VL == max(temptemp$VL)][1]
+    temptemp$Event[temptemp$Time > peakTime] <- NA
+    
+    dat$ExpEvent[dat$ID == i & dat$Event == j] <- temptemp$Event # update event details eith exponential mods.
+  }
+}
+
+```
+
+
+```{r}
+# Raw viral load trajectories
+
+rawDat <- dat[dat$ID %in% expDat$ID,]
+rawDat <- rawDat[rawDat$numSamples > 10,]
+rawDat <- rawDat[rawDat$PeakVL > 15000,]
+rawDat$newID <- as.numeric(factor(rawDat$ID))
+
+ggp <- ggplot()+
+  geom_line(data = rawDat, aes(x = Time, y = VL, group = ID))+
+  scale_y_log10(breaks=c(199,1000,4000,10000,100000,1000000,10000000,100000000),labels = formatterIU)+
+  labs(y = 'CMV Viral Load (IU/mL)', x = 'Days Post-Transplant')+
+  facet_wrap(~ID, shrink = F, scales = 'free')+
+  theme_classic()
+ggp
+
+```
+
+
+```{r}
+# Raw viral load trajectories
+
+rawDat <- dat[dat$ID %in% expDat$ID,]
+rawDat <- rawDat[rawDat$numSamples > 10,]
+rawDat <- rawDat[rawDat$PeakVL > 15000,]
+rawDat$newID <- as.numeric(factor(rawDat$ID))
+
+ggp <- ggplot()+
+  geom_line(data = rawDat, aes(x = Time, y = VL, group = newID))+
+  scale_y_log10(breaks=c(199,1000,4000,10000,100000,1000000,10000000,100000000),labels = formatterIU)+
+  labs(y = 'CMV Viral Load (IU/mL)', x = 'Days Post-Transplant')+
+  facet_wrap(~newID, shrink = F, scales = 'free')+
+  theme_classic()
+ggp
+
+ggsave(paste(wd.output, '/', 'VLs', '.pdf', sep = ''), ggp, width = 25, height = 20, units = c('cm'))
+```
+
+# Seperate out into exponential and full datasets
+```{r}
+expDat <- dat[!is.na(dat$ExpEvent) == T,]
+#dat <- dat[ , !name(dat) %in% c('PeakVL')] #Removes incorrect columns by name
+```
+
+# DT
+```{r}
+expDat$GrowthRate <- NA
+expDat$DoublingTime <- NA
+
+for (i in unique(expDat$Event)){
+  temp <- expDat[expDat$Event == i,]
+  
+  growthRate <- (log(max(temp$VL)) - log(min(temp$VL))) / (max(temp$Time) - temp$Time[1])
+  #growthRate <- (log(max(temp$VL)) - log(temp$VL[1])) / (temp$Time[temp$VL == max(temp$VL)][1] - temp$Time[temp$Time == temp$Time[1]][length(temp$Time[temp$Time == temp$Time[1]])])
+  #growthRate <- (log(max(temp$VL)) - log(temp$VL[1])) / (temp$Time[temp$VL == max(temp$VL)][1] - temp$Time[temp$VL>10][1])
+  doublingTime <- log(2)/growthRate
+  
+  expDat$GrowthRate[expDat$Event == i] <- growthRate
+  expDat$DoublingTime[expDat$Event == i] <- doublingTime
+  expDat$Time[expDat$Event == i] <- expDat$Time[expDat$Event == i] - min(expDat$Time[expDat$Event == i]) # scale all time to 0
+}
+
+expDat <- expDat[!is.nan(expDat$DoublingTime)==T,]
+
+```
+
+
+```{r}
+# Fits exponential model between events
+# model used: x(t) = x(0) * e(k*t)
+
+ks <- vector() # stores all ks for events
+
+# ID, t1, t2, y1, y2, k, event - store all 2 point exps in a df
+#event <- data.frame(stringsAsFactors = F)
+
+pred <- data.frame(vector(), vector(), vector(), vector())
+
+# For each exponential event - fit exponential model
+for (i in unique(expDat$Event)){
+  temp <- expDat[expDat$Event == i,]
+  t0 <- temptemp$Time[1]
+  temp$Time <- temp$Time - t0
+  
+  # Parameters
+  y0 <- temp$VL[1]
+  t <- seq(temp$Time[1], tail(temp$Time, n = 1))
+  
+  # Fit model + extract parameters
+  model <- nlsLM(VL ~ y0 * exp(k * Time), data = temp, start = list(k = 0.1))
+  k <- coef(model)[[1]]
+  ks <- append(ks, rep(k, length(temp$Time)))
+  
+  # Draw predicted values from model
+  tPred <- seq(temp$Time[1], tail(temp$Time, n=1), by = 0.1)
+  xPred <- predict(model, list(Time = tPred))
+  
+  pred <- rbind(pred, data.frame(rep(unique(expDat$ID[expDat$Event == i]), length(tPred)), rep(i, length(tPred)), tPred, xPred))
+  
+  eventks <- vector() # stores all ks for events
+  
+  # For each pair in the exponential event - fit exponential model
+  for (j in seq(2, length(temp$VL))){
+    temptemp <- temp[(j-1):j,]
+    t0 <- temptemp$Time[1]
+    t1 <- tail(temptemp$Time, n = 1)
+    temptemp$Time <- temptemp$Time - t0
+    
+    # Parameters
+    y0 <- temptemp$VL[1]
+    y1 <- tail(temptemp$VL, n = 1)
+    t <- seq(temptemp$Time[1], tail(temptemp$Time, n = 1), by = 0.1)
+    
+    # Fit model + extract parameters
+    tempmodel <- nlsLM(VL ~ y0 * exp(k * Time), data = temptemp, start = list(k = 0))
+    k <- coef(tempmodel)[[1]]
+    
+    # Form row for dataframe 
+    row <- c(unique(expDat$ID[expDat$Event == i]), t0, t1, y0, y1, k, i)
+    
+    # Draw predicted values from model
+    xPred <- seq(temptemp$Time[1], tail(temptemp$Time, n=1), by = 0.1)
+    yPred <- predict(tempmodel, list(Time = t))
+    
+    eventks <- append(eventks, k) # stores all ks in event
+    
+    #event <- rbind(event, row)
+  }
+}
+
+
+expDat$k <- ks
+
+plot(temptemp$Time, temptemp$VL)
+lines(xPred, yPred)
+
+names(pred) <- c('ID', 'Event', 'xPred', 'yPred')
+```
+
+
+# Data for plotting
+```{r}
+expDat2 <- expDat[!is.nan(expDat$DoublingTime) == T,]
+expDat2 <- expDat2[!expDat2$DoublingTime == 0,]
+temp <- expDat2[expDat2$Event <= 100,] # limit amount of plots
+#temp <- expDat2 # limit amount of plots
+tempPred <- pred[pred$Event %in% temp$Event,]
+#temp <- expDat
+```
+
+
+```{r}
+singleVL <- rawDat[rawDat$ID == '934939',]
+singleVL$ExpEvent <- singleVL$ExpEvent - min(singleVL$Event)+1
+singleVL$Event <- singleVL$Event - min(singleVL$Event)+1
+
+```
+
+```{r}
+ggp <- ggplot()+
+  geom_line(data = singleVL, aes(x = Time, y = VL, group = 1), alpha = 1)+
+  geom_point(data = singleVL, aes(x = Time, y = VL, group = 1), alpha = .5)+
+  labs(y = 'CMV Viral Load (IU/mL)', x = 'Days Post-Transplant', colour = 'Event')+
+  scale_y_log10(breaks=c(199,300,500,1000,2000,4000,10000,100000,40000,1000000,10000000,100000000),labels = formatterIU)+
+  theme_bw() + theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank(), text = element_text(size=15))+
+  theme(plot.margin=unit(c(1,1,1,1),"cm"))
+
+ggp
+ggsave(paste(wd.output, '/', 'VL', '.pdf', sep = ''), ggp, width = 16, height = 10, units = c('cm'))
+```
+
+
+```{r}
+ggp <- ggplot()+
+  geom_line(data = singleVL[singleVL$Event < 2,], aes(x = Time, y = VL, group = 1), alpha = .5)+
+  geom_line(data = singleVL[singleVL$Event == 2,], aes(x = Time, y = VL, colour = as.factor(Event), group = 1))+
+  geom_line(data = singleVL[singleVL$Event > 2,], aes(x = Time, y = VL, group = 1), alpha = .5)+
+  geom_point(data = singleVL[singleVL$Event == 2,], aes(x = Time, y = VL, group = 1), alpha = .5)+
+  labs(y = 'CMV Viral Load (IU/mL)', x = 'Days Post-Transplant', colour = 'Event')+
+  scale_y_log10(breaks=c(199,300,500,1000,2000,4000,10000,100000,40000,1000000,10000000,100000000),labels = formatterIU)+
+  theme_bw() + theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank(), text = element_text(size=15))+
+  theme(plot.margin=unit(c(1,1,1,1),"cm"))
+
+ggp
+ggsave(paste(wd.output, '/', 'VLEvent', '.pdf', sep = ''), ggp, width = 16, height = 10, units = c('cm'))
+```
+```{r}
+ggp <- ggplot()+
+  geom_line(data = singleVL[singleVL$Event < 2,], aes(x = Time, y = VL, group = 1), alpha = .2)+
+  geom_line(data = singleVL[singleVL$Event == 2 & is.na(singleVL$ExpEvent) == F,], aes(x = Time, y = VL, colour = as.factor(Event), group = 1))+
+  geom_line(data = singleVL[singleVL$Event == 2 & is.na(singleVL$ExpEvent) == T,], aes(x = Time, y = VL), group = 1, alpha = .5)+
+  geom_line(data = singleVL[singleVL$Event > 2,], aes(x = Time, y = VL, group = 1), alpha = .2)+
+  geom_point(data = singleVL[singleVL$Event == 2 & is.na(singleVL$ExpEvent) == F,], aes(x = Time, y = VL, group = 1), alpha = .5)+
+  labs(y = 'CMV Viral Load (IU/mL)', x = 'Days Post-Transplant', colour = 'Growth Data')+
+  scale_y_log10(breaks=c(199,300,500,1000,2000,4000,10000,100000,40000,1000000,10000000,100000000),labels = formatterIU)+
+  theme_bw() + theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank(), text = element_text(size=15))+
+  theme(plot.margin=unit(c(1,1,1,1),"cm"))
+
+ggp
+ggsave(paste(wd.output, '/', 'VLExpEvent', '.pdf', sep = ''), ggp, width = 16, height = 10, units = c('cm'))
+```
+
+```{r}
+expSingleVL <- singleVL[is.na(singleVL$ExpEvent) == F & singleVL$Event == 2,]
+expSingleVL <- expSingleVL[2:length(expSingleVL$ID),]
+expSingleVL$Time2 <- expSingleVL$Time - min(expSingleVL$Time)
+
+y0 <- expSingleVL$VL[1]
+y1 <- tail(expSingleVL$VL, n = 1)
+t <- seq(expSingleVL$Time2[1], tail(expSingleVL$Time2, n=1), by = 0.1)
+
+tempmodel <- nlsLM(VL ~ y0 * exp(k * Time2), data = expSingleVL, start = list(k = 0))
+
+yPred <- predict(tempmodel, list(Time2 = t))
+xPred <- t + min(expSingleVL$Time)
+k <- coef(tempmodel)[[1]]
+
+ggp <- ggplot()+
+  geom_line(data = expSingleVL, aes(x = Time, y = VL, group = 1), alpha = 1)+
+  geom_point(data = expSingleVL, aes(x = Time, y = VL, group = 1), alpha = 1)+
+  geom_line(aes(x = xPred, y = yPred, colour = 'Exp. Model'))+
+  
+  labs(y = 'CMV Viral Load (IU/mL)', x = 'Days Post-Transplant', colour = 'Growth Model')+
+  scale_y_log10(breaks=c(199,300,500,1000,2000,4000,10000,100000,40000,1000000,10000000,100000000),labels = formatterIU)+
+  theme_bw() + theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank(), text = element_text(size=15))+
+  theme(plot.margin=unit(c(1,1,1,1),"cm"))
+
+ggp
+
+ggsave(paste(wd.output, '/', 'VLExpEventModel', '.pdf', sep = ''), ggp, width = 16, height = 10, units = c('cm'))
+
+```
+
+```{r}
+expSingleVLPreds <- data.frame(vector(), vector(), vector(), vector(), vector(), vector())
+
+model <- 1
+for (j in seq(2, length(expSingleVL$VL))){
+  temptemp <- expSingleVL[(j-1):j,]
+  t0 <- temptemp$Time[1]
+  t1 <- tail(temptemp$Time, n = 1)
+  temptemp$Time <- temptemp$Time - t0
+  
+  # Parameters
+  y0 <- temptemp$VL[1]
+  y1 <- tail(temptemp$VL, n = 1)
+  #t <- seq(temptemp$Time[1], tail(temptemp$Time, n = 1), by = 0.1)
+  t <- seq(temptemp$Time[1], max(expSingleVL$Time) - t0, by = 0.1)
+  
+  # Fit model + extract parameters
+  tempmodel <- nlsLM(VL ~ y0 * exp(k * Time), data = temptemp, start = list(k = 0))
+  k <- coef(tempmodel)[[1]]
+  
+  # Form row for dataframe 
+  row <- c(unique(expDat$ID[expDat$Event == i]), t0, t1, y0, y1, k, i)
+  
+  # Draw predicted values from model
+  #xPred <- seq(temptemp$Time[1], tail(temptemp$Time, n=1), by = 0.1)
+  xPred <- t
+  yPred <- predict(tempmodel, list(Time = t))
+  
+  eventks <- append(eventks, k) # stores all ks in event
+  expSingleVLPreds <- rbind(expSingleVLPreds, data.frame(xPred, yPred, rep(t0, length(xPred)), rep(t1, length(yPred)), rep(k, length(xPred)), rep(paste('Model', model), length(xPred)) ))
+  model <- model +1
+}
+names(expSingleVLPreds) <- c('xPred', 'yPred', 't0', 't1', 'k', 'model')
+
+expSingleVLPreds$xPred <- expSingleVLPreds$xPred + expSingleVLPreds$t0
+```
+
+
+```{r}
+ggp <- ggplot()+
+  geom_line(data = expSingleVLPreds, aes(x = xPred, y = yPred, group = model, colour = model), linetype = 'dashed')+
+    geom_line(data = expSingleVL, aes(x = Time, y = VL, group = 1), alpha = 1)+
+    geom_point(data = expSingleVL, aes(x = Time, y = VL, group = 1), alpha = 1)+
+    labs(y = 'CMV Viral Load (IU/mL)', x = 'Days Post-Transplant', colour = 'Growth Model')+
+  scale_y_log10(breaks=c(199,500,1000,2000,4000,10000,100000,40000,1000000,10000000,100000000),labels = formatterIU)+
+  theme_bw() + theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank(), text = element_text(size=15))+
+  theme(plot.margin=unit(c(1,1,1,1),"cm"))
+
+ggsave(paste(wd.output, '/', 'VLExpEventDiscontinuousModel', '.pdf', sep = ''), ggp, width = 16, height = 10, units = c('cm'))
+```
+
+```{r}
+expSingleVLPreds <- data.frame(vector(), vector(), vector(), vector(), vector(), vector())
+
+model <- 1
+for (j in seq(2, length(expSingleVL$VL))){
+  temptemp <- expSingleVL[1:j,]
+  t0 <- min(expSingleVL$Time)
+  t1 <- tail(temptemp$Time, n = 1)
+  temptemp$Time <- temptemp$Time - t0
+  
+  # Parameters
+  y0 <- expSingleVL$VL[1]
+  y1 <- tail(temptemp$VL, n = 1)
+  #t <- seq(temptemp$Time[1], tail(temptemp$Time, n = 1), by = 0.1)
+  t <- seq(min(expSingleVL$Time)-t0, max(expSingleVL$Time)-t0, by = 0.1)
+  
+  # Fit model + extract parameters
+  tempmodel <- nlsLM(VL ~ y0 * exp(k * Time), data = temptemp, start = list(k = 0))
+  k <- coef(tempmodel)[[1]]
+  
+  # Form row for dataframe 
+  row <- c(unique(expDat$ID[expDat$Event == i]), t0, t1, y0, y1, k, i)
+  
+  # Draw predicted values from model
+  #xPred <- seq(temptemp$Time[1], tail(temptemp$Time, n=1), by = 0.1)
+  xPred <- t
+  yPred <- predict(tempmodel, list(Time = t))
+  
+  eventks <- append(eventks, k) # stores all ks in event
+  expSingleVLPreds <- rbind(expSingleVLPreds, data.frame(xPred, yPred, rep(t0, length(xPred)), rep(t1, length(yPred)), rep(k, length(xPred)), rep(paste('Model', model), length(xPred)) ))
+  model <- model +1
+}
+names(expSingleVLPreds) <- c('xPred', 'yPred', 't0', 't1', 'k', 'model')
+
+expSingleVLPreds$xPred <- expSingleVLPreds$xPred + expSingleVLPreds$t0
+```
+
+
+```{r}
+ggp <- ggplot()+
+  geom_line(data = expSingleVLPreds, aes(x = xPred, y = yPred, group = model, colour = model), linetype = 'dashed')+
+    geom_line(data = expSingleVL, aes(x = Time, y = VL, group = 1), alpha = 1)+
+    geom_point(data = expSingleVL, aes(x = Time, y = VL, group = 1), alpha = 1)+
+    labs(y = 'CMV Viral Load (IU/mL)', x = 'Days Post-Transplant', colour = 'Growth Model')+
+  scale_y_log10(breaks=c(199,500,1000,2000,4000,10000,100000,40000,1000000,10000000,100000000),labels = formatterIU)+
+  theme_bw() + theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank(), text = element_text(size=15))+
+  theme(plot.margin=unit(c(1,1,1,1),"cm"))
+
+ggsave(paste(wd.output, '/', 'VLExpEventContinuousModel', '.pdf', sep = ''), ggp, width = 16, height = 10, units = c('cm'))
+```
+
+```{r}
+ggp <- ggplot()+
+  geom_line(data = expSingleVLPreds, aes(x = xPred, y = yPred, group = model, colour = model), linetype = 'dashed')+
+    geom_line(data = expSingleVL, aes(x = Time, y = VL, group = 1), alpha = 1)+
+    geom_point(data = expSingleVL, aes(x = Time, y = VL, group = 1), alpha = 1)+
+    labs(y = 'CMV Viral Load (IU/mL)', x = 'Days Post-Transplant', colour = 'Growth Model')+
+  scale_y_log10(breaks=c(199,500,1000,2000,4000,10000,100000,40000,1000000,10000000,100000000),labels = formatterIU)+
+  scale_x_continuous(limits = c(80, 90))+
+  theme_bw() + theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank(), text = element_text(size=15))+
+  theme(plot.margin=unit(c(1,1,1,1),"cm"))
+ggsave(paste(wd.output, '/', 'VLExpEventContinuousModelCloseUp', '.pdf', sep = ''), ggp, width = 16, height = 10, units = c('cm'))
+
+```
+
+
+```{r}
+
+```
+
+
+```{r}
+ggp <- ggplot()+
+  geom_line(data = singleVL[singleVL$Event < 2,], aes(x = Time, y = VL, group = 1), alpha = .2)+
+  geom_line(data = singleVL[singleVL$Event == 2 & is.na(singleVL$ExpEvent) == T,], aes(x = Time, y = VL), group = 1, alpha = .5)+
+  geom_line(data = singleVL[singleVL$Event > 2,], aes(x = Time, y = VL, group = 1), alpha = .2)+
+  geom_point(data = singleVL[singleVL$Event == 2 & is.na(singleVL$ExpEvent) == F,], aes(x = Time, y = VL, group = 1), alpha = .5)+
+    geom_line(data = expSingleVLPreds, aes(x = xPred, y = yPred, group = model, colour = model), linetype = 'dashed')+
+    geom_line(data = expSingleVL, aes(x = Time, y = VL, group = 1), alpha = 1)+
+    geom_point(data = expSingleVL, aes(x = Time, y = VL, group = 1), alpha = 1)+
+
+  labs(y = 'CMV Viral Load (IU/mL)', x = 'Days Post-Transplant', colour = 'Growth Data')+
+  scale_y_log10(breaks=c(199,500,1000,2000,4000,10000,100000,40000,1000000,10000000,100000000),labels = formatterIU)+
+  theme_bw() + theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank(), text = element_text(size=15))+
+  theme(plot.margin=unit(c(1,1,1,1),"cm"))
+
+ggp
+
+ggsave(paste(wd.output, '/', 'VLExpEventContinuousModelWholeTrajectory', '.pdf', sep = ''), ggp, width = 20, height = 10, units = c('cm'))
+
+```
+
+```{r}
+
+expSingleVLPredsRes <- expSingleVLPreds[expSingleVLPreds$xPred %in% expSingleVL$Time,]
+expSingleVLPredsRes <- merge(expSingleVLPredsRes, expSingleVL, by.x = 'xPred', by.y = 'Time')
+
+
+ggp <- ggplot()+
+  #geom_point()+
+  geom_line(data = expSingleVLPredsRes, aes(x = yPred, y = VL, group = model, colour = model), alpha = .5, linetype = 'dashed')+
+  geom_point(data = expSingleVLPredsRes, aes(x = yPred, y = VL, group = model, colour = model))+
+  labs(y = 'Model Prediction (IU/mL)', x = 'CMV VL Observation (IU/mL)', colour = 'Growth Data')+
+  geom_abline(slope=1, intercept=0)+
+  scale_y_log10(breaks=c(199,1000,10000,100000,1000000,10000000,100000000), limits = c(150,10000000),labels = formatterIU)+
+  scale_x_log10(breaks=c(199,1000,10000,100000,1000000,10000000,100000000), limits = c(150,10000000),labels = formatterIU)+
+  theme_bw() + theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank(), text = element_text(size=15))+
+  theme(plot.margin=unit(c(1,1,1,1),"cm"))
+
+ggp
+ggsave(paste(wd.output, '/', 'VLExpEventContinuousModelXY', '.pdf', sep = ''), ggp, width = 20, height = 10, units = c('cm'))
+```
+

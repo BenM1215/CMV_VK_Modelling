@@ -1,0 +1,345 @@
+---
+title: "Model Fit - Stan - V1"
+author: "Ben Margetts"
+date: "02/02/2018"
+output:
+  pdf_document: default
+  html_document: default
+---
+
+RUNS Model on data from ODESimulations and ODESimulationsMyModel.Rmd
+
+# Description
+
+Nowak model with basic functional code.
+V1 = reasonable estimates, working. Good Rhat values
+
+V1.5 = :
+  - y0s
+  - t0s > 0
+  - Generated quantities
+
+# Libraries
+```{r}
+library(rstan)
+library(ggplot2)
+library(scales)
+library(plyr)
+#library(ctsem)
+
+rstan_options(auto_write = TRUE)
+options(mc.cores = parallel::detectCores())
+```
+
+# Function to kill Stan runs (with multiple chains)
+```{r}
+kill_stan = function(){
+	system2(
+		command = "killall"
+		, args = "R"
+	)
+}
+```
+
+
+# Working Directory
+```{r}
+wd <- '~/Google/PhD/Year_1/Modelling/Stan/CMV Stan Feb 18/'
+```
+
+# Read Data In
+```{r}
+setwd(wd)
+modelDat <- read.csv('ModellingData.csv', stringsAsFactors = F)
+
+#TEST
+#modelDat <- modelDat[modelDat$Event == 1 | modelDat$Event == 2 | modelDat$Event == 7,]
+modelDat <- modelDat[modelDat$Event %in% sample(unique(modelDat$Event), size = 10),]
+```
+
+# Model parameters
+```{r}
+t0 <- -1
+numODEs <- 3
+numIDs <- length(unique(modelDat$Event))
+
+Y0s <- vector()
+for (i in unique(modelDat$Event)){
+  #Y0s <- append(Y0s, modelDat$Y0[modelDat$ID==i][1])
+  Y0s <- append(Y0s, unique(modelDat$Y0[modelDat$Event == i]))
+}
+
+# Adjust for t0
+#modelDatUse <- modelDat[!modelDat$Time == 0,]
+modelDatUse <- modelDat
+#modelDatUse$Time <- modelDatUseTime + 1
+
+numObs <- vector()
+for (i in unique(modelDatUse$Event)){
+  numObs <- append(numObs,length(modelDatUse$Event[modelDatUse$Event==i])) #test
+}
+
+totNumObs <- sum(numObs)
+```
+
+
+# Stan - Ragged Array
+```{r}
+sizes <- vector()
+
+for (i in unique(modelDatUse$Event)){
+  sizes <- append(sizes, length(modelDatUse$Event[modelDatUse$Event==i]))
+}
+```
+
+# Stan - Generated quantities
+
+```{r}
+gen_time <- seq(1, max(as.numeric(modelDatUse$Time)))
+gen_time_N <- length(gen_time)
+```
+
+
+# Initial estimates
+
+```{r}
+ini = function(){ #initial values for each parameter
+  list(lambda_mu = abs(rnorm(1,10000,0.2)),
+       d_mu = abs(rnorm(1,0.03,0.01)),
+       k_mu = abs(rnorm(1,2.6e-8,1e-8)),
+       delta_mu = abs(rnorm(1,0.3,0.2)),
+       rho_mu = abs(rnorm(1,400,0.2)),
+       c_mu = abs(rnorm(1,5,0.2)),
+       k_phi = rep(abs(rnorm(1,2.6e-8,1e-8)), numIDs),
+       #sigma = rep(abs(rnorm(1,0.5,0.2)), numIDs),
+       #eta_lambda = rep(0.01, numIDs),
+       #eta_d = rep(0.01, numIDs),
+       #eta_k = rep(0.01, numIDs),
+       #eta_delta = rep(0.01, numIDs),
+       #eta_rho = rep(0.01, numIDs),
+       #eta_c = rep(0.01, numIDs),
+        sigma = rep(abs(rnorm(1,0.5,0.2)), 1)
+       )
+}
+
+```
+
+
+# Run model
+```{r}
+# Problem is ragged arrays for time and obs. Code group sizes
+numIterations <- 400
+modelName <- '3ODEMWE/ModelFitV2s12'
+chains <- 2
+
+fit <- stan(
+            file = file.path(wd, paste(modelName, '.stan', sep = '')), 
+            data=list(
+                      nSubjects = numIDs, 
+                      nObs = totNumObs, 
+                      nODEs = numODEs, 
+                      time = as.numeric(modelDatUse$Time),
+                      obs = modelDatUse$VL, 
+                      s = array(sizes),
+                      t0 = t0, 
+                      Y0s = array(Y0s),
+                      gen_time = gen_time,
+                      adapt_delta = 0.8,
+                      max_treedepth = 10, #default = 10
+                      gen_time_N = gen_time_N
+                      #stepsize = 0.01, #when adaption is off
+                      #engaged = 0 #0 = off
+                      ),
+            iter = numIterations,
+            #init = ini,
+            chains = chains,
+            verbose = F,
+            refresh = 1
+            )
+
+#print(fit, pars = c('thetaHat', 'sigma', 'U0', 'I0', 'lp__', 'eta'), probs = c(0.1, 0.5, 0.9), digits = 3)
+#print(fit)
+```
+
+```{r}
+print(fit)
+```
+
+
+# Generated Predictions
+```{r}
+n <- 3 #number of ODEs
+
+generated_quantities <- extract(fit)
+
+pop_u <- generated_quantities$'pop_pred'[,,1]
+pop_i <- generated_quantities$'pop_pred'[,,2]
+pop_v <- generated_quantities$'pop_pred'[,,3]
+
+ind_u <- generated_quantities$'ind_pred'[,,1]
+ind_i <- generated_quantities$'ind_pred'[,,2]
+ind_v <- generated_quantities$'ind_pred'[,,3]
+
+U0_hat <- generated_quantities$'Y0_hat'[,1,]
+I0_hat <- generated_quantities$'Y0_hat'[,2,]
+V0_hat <- generated_quantities$'Y0_hat'[,3,]
+
+
+generated_quantities_dat <- modelDatUse
+
+generated_quantities_dat$chain <- NA
+
+generated_quantities_dat$pop_U <- NA
+generated_quantities_dat$pop_I <- NA
+generated_quantities_dat$pop_V <- NA
+
+generated_quantities_dat$ind_U <- NA
+generated_quantities_dat$ind_I <- NA
+generated_quantities_dat$ind_V <- NA
+
+generated_quantities_dat$U0_hat <- NA
+generated_quantities_dat$I0_hat <- NA
+generated_quantities_dat$V0_hat <- NA
+
+
+generated_quantities_dat <- generated_quantities_dat[rep(seq_len(nrow(generated_quantities_dat)), dim(pop_v)[1]),] #create repeating dataframe to contain structured sample computations
+
+#pop values
+pop_vs <- vector()
+pop_is <- vector()
+pop_us <- vector()
+
+ind_vs <- vector()
+ind_is <- vector()
+ind_us <- vector()
+
+#U0_hats <- vector()
+#I0_hats <- vector()
+#V0_hats <- vector()
+
+for (i in 1:dim(pop_v)[1]){ #loop through chains
+ pop_vs <- append(pop_vs, pop_v[i,])
+ pop_is <- append(pop_is, pop_i[i,])
+ pop_us <- append(pop_us, pop_u[i,])
+ 
+ ind_vs <- append(ind_vs, ind_v[i,])
+ ind_is <- append(ind_is, ind_i[i,])
+ ind_us <- append(ind_us, ind_u[i,])
+ 
+ #U0_hats <- append(U0_hats, rep(U0_hat[i,], times = sizes))
+ #I0_hats <- append(I0_hats, rep(I0_hat[i,], times = sizes))
+ #V0_hats <- append(V0_hats, rep(V0_hat[i,], times = sizes))
+}
+
+generated_quantities_dat$pop_V <- pop_vs
+generated_quantities_dat$pop_I <- pop_is
+generated_quantities_dat$pop_U <- pop_us
+
+generated_quantities_dat$ind_V <- ind_vs
+generated_quantities_dat$ind_I <- ind_is
+generated_quantities_dat$ind_U <- ind_us
+
+#generated_quantities_dat$U0_hat <- U0_hats
+#generated_quantities_dat$I0_hat <- I0_hats
+#generated_quantities_dat$V0_hat <- V0_hats
+
+generated_quantities_dat$chain <- rep(1:dim(pop_v)[1], each = dim(pop_v)[2])
+
+
+```
+
+```{r}
+temp <- generated_quantities_dat[generated_quantities_dat$chain==max(generated_quantities_dat$chain),]
+
+#plot(temp$V, temp$pop_V)
+
+#qplot(temp$V, temp$pop_V) + geom_abline(intercept = 0, slope = 1)
+qplot(temp$VL, temp$ind_V, colour = as.factor(temp$ID), group = as.factor(temp$ID)) + geom_abline(intercept = 0, slope = 1)+scale_y_log10(labels = comma)+scale_x_log10(labels = comma)
+#qplot(temp$V, temp$pop_V, colour = as.factor(temp$ID), group = as.factor(temp$ID)) + geom_abline(intercept = 0, slope = 1)
+#qplot(generated_quantities_dat$V, generated_quantities_dat$ind_V) + geom_abline(intercept = 0, slope = 1)
+```
+
+```{r}
+#plot(pop_vl)
+```
+
+
+```{r}
+#pairs(fit, pars = c('theta', 'sigma','U0', 'I0'))
+#pairs(fit, pars = c('theta', 'sigma', 'U0'))
+#pairs(fit, pars = c('theta', 'sigma'))
+#pairs(fit, pars = c('theta'))
+#pairs(fit, pars = c('lambda', 'delta', 'rho'))
+#pairs(fit, pars = c('d', 'startingI'))
+```
+
+```{r}
+#traceplot(fit, pars = c('theta', 'sigma', 'U0', 'I0'))
+#traceplot(fit, pars = c('theta', 'sigma', 'U0'))
+#traceplot(fit, pars = c('theta', 'sigma'))
+#traceplot(fit, pars = c('theta', 'eta_beta'), inc_warmup = T)
+traceplot(fit, inc_warmup = T, pars = c('lambda_mu', 'lambda_phi'))
+```
+
+```{r}
+ggplot(data = generated_quantities_dat[generated_quantities_dat$chain == max(generated_quantities_dat$chain),])+
+  geom_point(aes(x = Time, y = pop_V, group = ID, colour = as.factor(ID)))+
+  geom_line(aes(x = Time, y = pop_V, group = ID, colour = as.factor(ID)))+
+  scale_y_log10(labels = comma)
+```
+
+
+```{r}
+ggplot(data = generated_quantities_dat[generated_quantities_dat$chain == max(generated_quantities_dat$chain),])+
+  geom_point(aes(x = Time, y = ind_V, group = ID, colour = as.factor(ID)))+
+  geom_line(aes(x = Time, y = ind_V, group = ID, colour = as.factor(ID)))+
+  scale_y_log10(labels = comma)
+```
+
+
+```{r}
+ggplot(data = generated_quantities_dat[generated_quantities_dat$chain == max(generated_quantities_dat$chain),])+
+  geom_point(aes(x = ind_V, y = pop_V, group = Event, colour = as.factor(Event)))+
+  geom_line(aes(x = ind_V, y = pop_V, group = Event, colour = as.factor(Event)))+
+  scale_y_log10(labels = comma)+
+  scale_x_log10(labels = comma)
+```
+
+```{r}
+ggplot(data = generated_quantities_dat[generated_quantities_dat$chain == max(generated_quantities_dat$chain),])+
+  geom_point(aes(x = ind_V, y = pop_V, group = Event, colour = as.factor(Event)))+
+  #geom_line(aes(x = ind_V, y = pop_V, group = Event, colour = as.factor(Event)))+
+  scale_y_log10(labels = comma)+
+  scale_x_log10(labels = comma)
+```
+
+
+```{r}
+ggplot(data = generated_quantities_dat[generated_quantities_dat$Event %in% c(134, 256, 94, 200, 339, 407, 461) & generated_quantities_dat$chain > 1000,])+
+  geom_line(aes(x = Time, y = ind_V, group = interaction(chain, Event), colour = as.factor(Event)), alpha = .01)+
+  geom_point(aes(x = Time, y = ind_V, group = interaction(chain, Event), colour = as.factor(Event)), alpha = .1)+
+  scale_y_log10(labels = comma, breaks = c(10, 100, 1000, 10000, 100000, 1000000))+
+  #scale_x_log10(labels = comma, breaks = c(10, 100, 1000, 10000, 100000, 1000000))+
+  theme_classic()+
+  #geom_abline(intercept = 0, slope = 1)+
+  labs(x = 'Time Post Transplant', y = 'Individual Predictions')+
+  theme(legend.position = 'none')
+```
+
+
+```{r}
+ggplot(data = generated_quantities_dat[generated_quantities_dat$chain == max(generated_quantities_dat$chain),])+
+  geom_point(aes(x = Time, y = ind_V, group = Event, colour = as.factor(Event)), shape = 2)+
+  geom_line(aes(x = Time, y = ind_V, group = Event, colour = as.factor(Event)), linetype = 2)+
+  geom_point(aes(x = Time, y = VL, group = Event, colour = as.factor(Event)))+
+  
+  geom_point(aes(x = -10, y = V0_hat, group = Event, colour = as.factor(Event)))+
+  
+  #geom_point(aes(y = generated_quantities_dat$U0_hat[generated_quantities_dat$chain == max(generated_quantities_dat$chain) & generated_quantities_dat$Time == 0], x = -1, group = generated_quantities_dat$Event[generated_quantities_dat$chain == max(generated_quantities_dat$chain) & generated_quantities_dat$Time == 0], colour = as.factor(generated_quantities_dat$Event[generated_quantities_dat$chain == max(generated_quantities_dat$chain) & generated_quantities_dat$Time == 0])), shape = 3)+
+  
+  geom_line(aes(x = Time, y = VL, group = Event, colour = as.factor(Event)))+
+  scale_y_log10(labels = comma)+
+  #scale_x_log10(labels = comma)+
+  NULL
+```
+

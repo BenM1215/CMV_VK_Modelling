@@ -1,0 +1,191 @@
+---
+title: "ODE Simulations"
+author: "Ben Margetts"
+date: "11/04/2017"
+output:
+  pdf_document: default
+  html_notebook: default
+  html_document: default
+---
+
+# Purpose: Simulate ODE Version of Model. Make Sure it Looks OK.
+
+# Required Packages
+
+Load in the following packages:
+
+```{r results='hide', message=FALSE, warning=FALSE}
+library(Rcpp)
+library(data.table)
+library(zoo)
+library(plyr)
+library(scales)
+library(ggplot2)
+library(ggthemes)
+library(dplyr)
+library(plotly)
+library(pracma)
+library(Hmisc)
+#library(rpart)
+#library(survminer)
+library(knitr)
+library(rstan)
+#library(shinystan)
+library(deSolve)
+rstan_options(auto_write = TRUE)
+options(mc.cores = parallel::detectCores())
+```
+
+# Setup notebook
+
+```{r setup}
+opts_chunk$set(message=T, warning=T, tidy.opts=list(width.cutoff=60),tidy=F)
+wd = "~/Google/PhD/Year_1/Data/BMT_Data/BMT_Drug_Dec2015" #Working directory variable
+```
+
+```{r}
+# Set up the true parameter values
+a <- 0.8
+b <- 2
+sigma <- .2
+     
+# Simulate some data
+x <- (1:1000)/100
+N <- length(x)
+obs <- a*exp(b*x)
+```
+
+
+#Ordinary Differential Equation 1 Vset - 1 Comp.
+
+```{r}
+#Without Noise
+t0 <- 0
+Y0 <- 100
+numODEs <- 1
+#Create the ODE
+Exp <- function(t, state, parameters) {
+with(as.list(c(state, parameters)), { 
+  dY<- delta*Y * (1-(Y/yset)) - c*Y
+  list(dY)
+      })
+}
+parameters <- c(delta = 3, c=1, yset=50000
+                )
+state <- c(Y=Y0)
+times <- (1:1000)/100
+```
+
+We can then run the ODE that we set up above using the following code.
+
+```{r}
+#Run the ODE
+out <- ode(y = state, times = times, func = Exp, parms = parameters)
+```
+
+If we plot the results of the analytical solution of our function against the results from our ODE, we can see that they agree.
+
+```{r}
+plot(out[,1],out[,2])
+```
+
+
+#Ordinary Differential Equation 2 - 3 Comp.
+
+
+```{r}
+t0 <- 0
+Y0 <- 100
+numODEs <- 3
+#Create the ODE
+Exp <- function(t, state, parameters) {
+with(as.list(c(state, parameters)), {
+  
+  dU <- -beta*U*V + lambda
+  dI <- beta*U*V - delta*I
+  dV <- rho*I - c*V
+  list(c(dU, dI, dV))
+      
+  })
+}
+parameters <- c(beta=1, lambda=4000, delta=0.1, rho=1, c=1 
+                )
+#state <- c(U=7441321, I=0, V=100)
+state <- c(U=100, I=0, V=100)
+#times <- (1:max(testDat$DATE))/1000
+times <- 1:100
+```
+
+We can then run the ODE that we set up above using the following code.
+
+```{r}
+#Run the ODE
+numPatients <- 4
+out <- vector()
+# remove this line
+#parameters <- c(beta=runif(1, min = 0.0001, max = 0.1), lambda=runif(1), delta=runif(1), rho=runif(1), c=runif(1))
+parameters <- c(beta = 1, lambda = 1, delta = 1, rho = 1, c = 1)
+for (i in 1:numPatients){
+  
+  parameters <- c(beta = 1, lambda = 1, delta = 1, rho = 1, c = 1)
+  #parameters <- c(beta=runif(1, min = 0.0001, max = 0.1), lambda=runif(1), delta=runif(1), rho=runif(1), c=runif(1))
+  #parameters <- parameters + 0.05
+  parameters[1] <- parameters[1] + rnorm(1, 0, 0.1)
+  parameters[2] <- parameters[2] + rnorm(1, 0, 0.1)
+  parameters[3] <- parameters[3] + rnorm(1, 0, 0.1)
+  parameters[4] <- parameters[4] + rnorm(1, 0, 0.1)
+  parameters[5] <- parameters[5] + rnorm(1, 0, 0.1)
+  
+  V0 <- runif(1, min = 1000, max = 1100)
+  
+  state <- c(U=100, I=0, V=V0)
+  
+  #times <- 1:100
+  times <- 1:runif(1, min = 90, max = 110)
+  #times <- 1:runif(1, min = 10, max = 365)
+  
+  if (length(out) != 0){
+    temp <- ode(y = state, times = times, func = Exp, parms = parameters)
+    temp <- as.data.frame(temp)
+    temp$ID <- i
+    temp$beta <- parameters[1]
+    temp$lambda <- parameters[2]
+    temp$delta <- parameters[3]
+    temp$rho <- parameters[4]
+    temp$c <- parameters[5]
+    temp$v0 <- V0
+    out <- rbind(out,temp)
+  }
+  
+    if (length(out) == 0){
+    out <- ode(y = state, times = times, func = Exp, parms = parameters)
+    out <- as.data.frame(out)
+    out$ID <- i
+    out$beta <- parameters[1]
+    out$lambda <- parameters[2]
+    out$delta <- parameters[3]
+    out$rho <- parameters[4]
+    out$c <- parameters[5]
+    out$v0 <- V0
+
+  }
+
+}
+```
+
+If we plot the results of the analytical solution of our function against the results from our ODE, we can see that they agree.
+
+```{r}
+plot(out[,1],out[,3])
+```
+
+```{r}
+plot(out[,1], out[,4])
+```
+
+```{r}
+setwd('~/Google/PhD/Year_1/Modelling/Stan/CMV Stan Feb 18')
+
+write.csv(out, 'SimulatedData.csv')
+```
+

@@ -1,0 +1,266 @@
+---
+title: "CMV variants simulation V.1"
+author: "Ben Margetts"
+date: "03/05/2017"
+output:
+  pdf_document: default
+  html_notebook: default
+  html_document: default
+---
+
+Purpose - basic model of how viral variants are produced from initial innoculum + susceptible cells.
+
+
+```{r}
+#Define populations
+
+
+#Define compartments
+comp1 <- list() #arbitrary
+comp2 <- list() #arbitrary
+comp3 <- list() #arbitrary
+blood <- list() #arbitrary
+
+#Susceptible cells per compartment
+comp1S <- 1000
+comp2S <- 1000
+comp3S <- 1000
+bloodS <- 1000
+
+#PRIORS:
+#Define probability distributions for each of the parameters of interest
+numVirions <- 3   #Number of virions produced by 1 successful reproduction event
+replicate <- rnorm(1000000, mean=0.2, sd=0.01) # 10% of sus. cells infected per unit time?
+clearance <- rnorm(1000000, mean=0.1, sd=0.01) # 40% cleared per unit time?
+mutate <- rnorm(1000000, mean=0.001, sd=0.0001) # 0.1% mutate per unit time?
+moveComp1 <- rnorm(1000000, mean=0.001, sd=0.0001) # 0.1% movement per unit time?
+moveComp2 <- rnorm(1000000, mean=0.001, sd=0.0001) # 0.1% movement per unit time?
+moveComp3 <- rnorm(1000000, mean=0.001, sd=0.0001) # 0.1% movement per unit time?
+moveBlood <- rnorm(1000000, mean=0.001, sd=0.0001) # 0.1% movement per unit time?
+
+#Time currently in arbitrary units...
+time <- 1000
+
+
+#Possible genotypes
+genotypes <- unlist(lapply(seq(1,100000),toString))
+
+
+###Seed an organ to begin simulation
+seedType <- '1'
+seedNumber <- 1000
+#comp1 <- unlist(append(comp1, rep(seedType, seedNumber)))
+blood <- unlist(append(blood, rep(seedType, seedNumber)))
+
+
+#Update state
+compList <- lapply(list(blood, comp1, comp2, comp3), unlist)
+susList <- list(bloodS, comp1S, comp2S, comp3S)
+
+
+###RANDOMLY SELECT WHICH OPERATION GOES FIRST?/OPERATION ORDER
+
+#Run simulation for total time t
+for (t in seq(1,time)){
+  
+  if(t%%100==0){
+
+    print(t)
+  }
+  
+  #Loop through each compartment
+  for (comp in seq(1:length(compList))){
+
+    #Run interactions for all compartments with virus
+    if (length(compList[[comp]]) > 0){
+
+      #Maintain current compartment base state
+      tempComp <- compList[[comp]]
+      
+
+      ####TASKS:###
+      #1). Replicate
+      tempRep <- sample(replicate, 1) #Samples replication parameter from distribution
+      selection <- sample(1:length(compList[[comp]]),tempRep*length(compList[[comp]]))
+
+      if(length(selection)>=1 & susList[[comp]]>0){
+        #print(c('t1', comp))
+        
+        if(length(selection)<=susList[[comp]]){
+          #print(c('t2', comp))
+
+          viralSample <- compList[[comp]][selection]
+          viralPostReproduction <- rep(viralSample, each=numVirions) #Each virion produces 2 virions
+          
+          #update compartment
+          compList[[comp]] <- compList[[comp]][-selection]
+          compList[[comp]] <- unlist(append(compList[[comp]], viralPostReproduction))
+          
+          #update susceptible cells
+          susList[[comp]] <- susList[[comp]]-length(selection)
+          
+        }
+        
+        if(length(selection)>susList[[comp]] & susList[[comp]]>0){
+          #print(c('t3', comp))
+          #print(c('t4', susList[[comp]]))
+          #print(c('t5', length(selection)))
+          #print(c('t6', length(compList[[comp]])))
+          selection <- sample(1:length(compList[[comp]]),tempRep*susList[[comp]])
+          #print(c('t7', length(selection)))
+          #print(c('t8', tempRep*length(susList[[comp]])))
+          
+          if(length(selection)>=1){
+            viralSample <- compList[[comp]][selection]
+            viralPostReproduction <- rep(viralSample, each=numVirions) #Each virion produces 2 virions
+            
+            #update compartment
+            compList[[comp]] <- compList[[comp]][-selection]
+            compList[[comp]] <- unlist(append(compList[[comp]], viralPostReproduction))
+            
+            #update susceptible cells
+            susList[[comp]] <- susList[[comp]]-length(selection)
+          }
+        }
+        
+      }
+      
+      
+      #2). Nothing - probably unecessary?
+    
+      
+      #3). Clearance
+      #Restrict to blood
+      if (comp == 1){
+        #print(comp)
+        tempClear <- sample(clearance, 1)
+        selection <- sample(1:length(compList[[comp]]),tempClear*length(compList[[comp]]))
+        
+        if (length(selection)>0){
+          viralSample <- compList[[comp]][selection]
+          
+          #update compartment
+          compList[[comp]] <- compList[[comp]][-selection]
+        }
+      }
+      
+    
+      #4). Mutate
+      tempMut <- sample(mutate,1)
+      selection <- sample(1:length(compList[[comp]]),tempMut*length(compList[[comp]]))
+      
+      if (length(selection)>0){
+        viralSample <- compList[[comp]][selection]
+        
+        #Set replace = T to allow the same mutation to arrise independently more then once
+        genSelection <- sample(genotypes, length(selection), replace=F) 
+        
+        #update compartment
+        compList[[comp]] <- compList[[comp]][-selection]
+        compList[[comp]] <- unlist(append(compList[[comp]], genSelection))
+      }
+      
+      
+      #5). Move to another compartment
+      
+      if (comp == 1){ #blood
+        
+        tempMoveComp1 <- sample(moveComp1, 1)
+        selectionComp1 <- sample(1:length(compList[[comp]]),tempMoveComp1*length(compList[[comp]]))
+        tempMoveComp2 <- sample(moveComp2, 1)
+        selectionComp2 <- sample(1:length(compList[[comp]]),tempMoveComp2*length(compList[[comp]]))
+        tempMoveComp3 <- sample(moveComp3, 1)
+        selectionComp3 <- sample(1:length(compList[[comp]]),tempMoveComp3*length(compList[[comp]]))
+        
+        if (length(selectionComp1)>0){
+          viralSampleComp1 <- compList[[comp]][selectionComp1]
+          #update compartment
+          compList[[comp]] <- compList[[comp]][-selectionComp1]
+          compList[[2]] <- append(compList[[2]], compList[[comp]][selectionComp1])
+        }
+
+        if (length(selectionComp2)>0){
+          viralSampleComp2 <- compList[[comp]][selectionComp2]
+          #update compartment
+          compList[[comp]] <- compList[[comp]][-selectionComp2]
+          compList[[3]] <- append(compList[[3]], compList[[comp]][selectionComp2])
+        }
+        
+        if (length(selectionComp3)>0){
+          viralSampleComp3 <- compList[[comp]][selectionComp3]
+          #update compartment
+          compList[[comp]] <- compList[[comp]][-selectionComp3]
+          compList[[4]] <- append(compList[[4]], compList[[comp]][selectionComp3])
+        }
+      }
+      
+      if (comp!=1){ #Organ
+        tempMoveBlood <- sample(moveBlood, 1)
+        selectionBlood <- sample(1:length(compList[[comp]]),tempMoveBlood*length(compList[[comp]]))
+        
+        if (length(selectionBlood)>0){
+          viralSampleBlood <- compList[[comp]][selectionBlood]
+          #update compartment
+          compList[[comp]] <- compList[[comp]][-selectionBlood]
+          compList[[4]] <- append(compList[[4]], compList[[comp]][selectionBlood])
+        }
+      }
+      
+      
+      #6). Randomise (mix) compartments?
+      
+      
+      #7). Susceptible cell turnover - NOT IMPLEMENTED HERE - CHECK V.2
+        
+      if (comp == 1) { # Blood
+        susList[[comp]] <- susList[[comp]] + 1
+      }
+      if (comp == 2) { # Comp1
+        susList[[comp]] <- susList[[comp]] + 1
+      }
+      if (comp == 3) { # Comp1
+        susList[[comp]] <- susList[[comp]] + 1
+      }
+      if (comp == 4) { # Comp1
+        susList[[comp]] <- susList[[comp]] + 1
+      }
+      
+
+
+        
+      #Print checks
+      
+      #print(c(comp,length(compList[[comp]]))) #blood
+      
+      
+    }
+    
+    
+    
+    
+  }
+  
+}
+
+
+```
+
+
+```{r}
+hist(as.numeric(compList[[1]]))
+```
+
+```{r}
+hist(as.numeric(compList[[2]]))
+```
+
+```{r}
+hist(as.numeric(compList[[3]]))
+```
+
+```{r}
+hist(as.numeric(compList[[4]]))
+```
+
+
+plot()
